@@ -1,0 +1,5 @@
+MongoDB selection:
+- Local: set MONGODB_URI=mongodb://127.0.0.1:27017/campusconnect in server/.env
+- Atlas: replace MONGODB_URI with your Atlas mongodb+srv:// connection string.
+Only this environment value controls which database the backend uses. Restart the backend after changing it.
+Never commit server/.env or share your Atlas password.
