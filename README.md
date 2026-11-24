@@ -56,7 +56,7 @@ The app creates/uses a database named `campusconnect`.
 5. Put it in `server/.env`, URL-encode special characters in the password, and use a database name:
 
 ```env
-MONGODB_URI=mongodb+srv://YOUR_USER:YOUR_PASSWORD@YOUR_CLUSTER.mongodb.net/campusconnect?retryWrites=true&w=majority
+MONGODB_URI=your_mongodb_connection_string
 ```
 
 Only one `MONGODB_URI` is active at a time. To switch between Local and Atlas, change this one value and restart the backend. No source-code changes are needed.
