@@ -9,3 +9,17 @@
 
 .connection-banner{display:flex;align-items:center;gap:8px;font-size:9px;padding:7px 10px;border-radius:7px;margin:-15px 0 15px;width:max-content;max-width:100%;background:#f3f4f8;color:#82869a}.connection-banner span{width:7px;height:7px;border-radius:50%;background:#d9a14d}.connection-banner.connected{background:#eef9f3;color:#328e69}.connection-banner.connected span{background:#35b985}.connection-banner.offline{background:#fff6eb;color:#ad7837}.connection-banner.offline span{background:#e9a14d}.driver-console{display:flex;align-items:center;justify-content:space-between;gap:15px;background:#f1efff;border:1px solid #e8e2ff;border-radius:12px;padding:13px 16px;margin-bottom:14px}.driver-console>div{display:grid;gap:5px}.driver-console b{font-size:11px;color:#5947a9}.driver-console small{font-size:9px;color:#85809f}.driver-console button{flex-shrink:0}
 .match-results{display:grid;gap:9px}.match-result{display:flex;align-items:center;gap:11px;padding:10px;border:1px solid #eceef4;border-radius:10px}.match-result img{width:58px;height:54px;object-fit:cover;border-radius:8px}.match-result>div{flex:1;display:grid;gap:4px}.match-result b{font-size:11px}.match-result small{font-size:9px;color:#85899b}.match-result strong{font:800 15px Manrope;color:#7056dc}.empty-state{font-size:11px;color:#85899b;background:#f8f8fc;padding:18px;border-radius:10px}
+
+/* Submission polish: visible keyboard focus and reduced-motion support. */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 3px solid #7668e8;
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

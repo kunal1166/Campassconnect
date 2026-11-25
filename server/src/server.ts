@@ -11,6 +11,7 @@ import notificationRoutes from './routes/notifications.js';
 import shuttleRoutes from './routes/shuttles.js';
 import { Item } from './models/Item.js';
 import { Shuttle } from './models/Shuttle.js';
+import mongoose from 'mongoose';
 
 const app = express();
 const server = http.createServer(app);
@@ -21,11 +22,22 @@ app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json({ limit: '2mb' }));
 app.use('/uploads', express.static(path.resolve(process.cwd(), process.env.UPLOAD_DIR || 'uploads')));
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'CampusConnect API', time: new Date().toISOString() }));
+app.get('/api/health', (_req, res) => res.status(mongoose.connection.readyState === 1 ? 200 : 503).json({ status: mongoose.connection.readyState === 1 ? 'ok' : 'degraded', database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected', service: 'CampusConnect API', time: new Date().toISOString() }));
 app.use('/api/auth', authRoutes);
 app.use('/api/items', itemRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/shuttles', shuttleRoutes);
+
+// Centralized API errors: keep internal stack traces out of client responses.
+app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (error instanceof SyntaxError && 'body' in error) return res.status(400).json({ message: 'Invalid JSON request body' });
+  if (error?.name === 'MulterError') return res.status(400).json({ message: error.code === 'LIMIT_FILE_SIZE' ? 'Image must be 5 MB or smaller' : 'Image upload failed' });
+  if (error?.name === 'CastError') return res.status(400).json({ message: 'Invalid resource ID' });
+  if (error?.name === 'ValidationError') return res.status(400).json({ message: 'Submitted data is invalid', details: Object.values(error.errors || {}).map((entry: any) => entry.message) });
+  if (error?.message === 'Only JPEG, PNG or WEBP images are allowed') return res.status(400).json({ message: error.message });
+  console.error('API error:', error);
+  res.status(500).json({ message: 'An unexpected server error occurred' });
+});
 
 io.on('connection', socket => {
   socket.emit('connection:ready', { connected: true, at: new Date().toISOString() });
@@ -42,6 +54,12 @@ setInterval(async () => {
 }, 30_000).unref();
 
 const port = Number(process.env.PORT || 5000);
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev_only_change_me' || process.env.JWT_SECRET.toLowerCase().includes('replace') || process.env.JWT_SECRET.length < 32)) {
+  throw new Error('Set a strong JWT_SECRET (at least 32 characters) before starting in production.');
+}
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev_only_change_me' || process.env.JWT_SECRET.toLowerCase().includes('replace')) {
+  console.warn('WARNING: Using the development JWT secret. Set JWT_SECRET in server/.env before any shared demo.');
+}
 connectDatabase().then(async () => {
   // Ensure route definitions exist; GPS coordinates arrive only from opted-in driver devices.
   const routeSeeds = [
