@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { User } from '../models/User.js';
+import { store } from '../config/store.js';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
@@ -60,9 +60,7 @@ router.post('/register', async (req, res, next) => {
 
     const validRole = role === 'driver' ? 'driver' : 'student';
 
-    const existingUser = await User.findOne({
-      email: normalizedEmail
-    });
+    const existingUser = await store.findUserByEmail(normalizedEmail);
 
     if (existingUser) {
       return res.status(409).json({
@@ -72,7 +70,7 @@ router.post('/register', async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(String(password), 12);
 
-    const user = await User.create({
+    const user = await store.createUser({
       name: String(name).trim(),
       email: normalizedEmail,
       passwordHash,
@@ -110,9 +108,7 @@ router.post('/login', async (req, res, next) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
 
-    const user = await User.findOne({
-      email: normalizedEmail
-    });
+    const user = await store.findUserByEmail(normalizedEmail);
 
     if (!user) {
       return res.status(401).json({
@@ -147,7 +143,7 @@ router.post('/login', async (req, res, next) => {
 // GET CURRENT USER
 router.get('/me', requireAuth, async (req: AuthRequest, res, next) => {
   try {
-    const user = await User.findById(req.user?.id);
+    const user = req.user?.id ? await store.findUserById(req.user.id) : null;
 
     if (!user) {
       return res.status(404).json({

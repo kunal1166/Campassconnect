@@ -1,0 +1,6 @@
+{
+  "name": "CampusConnect | UEM Kolkata",
+  "description": "CampusConnect — your smarter campus companion with Lost & Found, live shuttle tracking on Google Maps, and AI-grounded campus & transit insights.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

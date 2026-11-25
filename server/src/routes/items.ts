@@ -3,8 +3,7 @@ import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { Item } from '../models/Item.js';
-import { Notification } from '../models/Notification.js';
+import { store } from '../config/store.js';
 import { optionalAuth, requireAuth, type AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
@@ -20,12 +19,13 @@ const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 }, fileFilt
 }});
 
 async function createImageEmbedding(filePath?: string): Promise<number[] | undefined> {
-  if (!filePath) return undefined;
+  const aiServiceUrl = process.env.AI_SERVICE_URL?.trim();
+  if (!filePath || !aiServiceUrl) return undefined;
   try {
     const bytes = await readFile(filePath);
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: 'image/jpeg' }), 'item-image.jpg');
-    const response = await fetch(`${process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000'}/embed`, { method: 'POST', body: form, signal: AbortSignal.timeout(20000) });
+    const response = await fetch(`${aiServiceUrl}/embed`, { method: 'POST', body: form, signal: AbortSignal.timeout(5000) });
     if (!response.ok) return undefined;
     const data = await response.json() as { embedding?: number[] };
     return data.embedding;
@@ -66,7 +66,7 @@ function serialize(item: any, score = 0) {
     id: item.id, title: item.title, name: item.title, description: item.description,
     category: item.category, location: item.location, place: item.location,
     status: item.status, match: score || item.matchScore || 0,
-    image: item.imageUrl ? `http://localhost:${process.env.PORT || 5000}${item.imageUrl}` : '',
+    image: item.imageUrl || '',
     imageUrl: item.imageUrl, date: new Date(item.reportedAt || item.createdAt).toLocaleString(),
     createdAt: item.createdAt, owner: item.owner
   };
@@ -75,35 +75,41 @@ function serialize(item: any, score = 0) {
 router.get('/', optionalAuth, async (req: AuthRequest, res, next) => {
   try {
     const { status, q } = req.query;
-    const filter: any = {};
-    if (status && ['Lost', 'Found', 'Claimed', 'Resolved'].includes(String(status))) filter.status = status;
-    if (q) filter.$text = { $search: String(q) };
-    const docs = await Item.find(filter).sort({ createdAt: -1 }).limit(100);
+    const validStatus = status && ['Lost', 'Found', 'Claimed', 'Resolved'].includes(String(status)) ? String(status) : undefined;
+    const docs = await store.listItems({ status: validStatus, q: q ? String(q) : undefined });
     res.json({ items: docs.map(doc => serialize(doc)) });
   } catch (error) { next(error); }
 });
 
-router.post('/', optionalAuth, upload.single('image'), async (req: AuthRequest, res, next) => {
+router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, res, next) => {
   try {
+    if (!req.user?.id) return res.status(401).json({ message: 'Authentication required' });
     const { title, name, description, category, location, place, status, contact } = req.body ?? {};
     const itemTitle = title || name;
     const itemLocation = location || place;
     if (!itemTitle || !itemLocation || !['Lost', 'Found'].includes(status)) return res.status(400).json({ message: 'Title, location and Lost/Found status are required' });
     const imageUrl = req.file ? `/uploads/${req.file.filename}` : '';
     const imageEmbedding = await createImageEmbedding(req.file?.path);
-    const item = await Item.create({
+    const item = await store.createItem({
       title: itemTitle, description: description || '', category: category || 'Personal items',
-      location: itemLocation, status, imageUrl, imageEmbedding, contact: contact || '', owner: req.user?.id || null
+      location: itemLocation, status, imageUrl, imageEmbedding, contact: contact || '', owner: req.user.id
     });
+    const io = req.app.get('io');
     // Notify the reporter and create contextual candidates for later review.
-    if (req.user?.id) await Notification.create({ user: req.user.id, title: `${status} report submitted`, message: `Your report for "${item.title}" is now visible to the campus community.`, type: 'system', relatedItem: item.id });
+    await store.createNotification({ user: req.user.id, title: `${status} report submitted`, message: `Your report for "${item.title}" is now visible to the campus community.`, type: 'system', relatedItem: item.id });
     // Find opposite-status reports and notify their signed-in reporters about candidate matches.
     const opposite = status === 'Lost' ? 'Found' : 'Lost';
-    const candidates = await Item.find({ status: opposite, _id: { $ne: item.id } }).limit(100);
+    const candidates = await store.findOppositeItems(opposite, item.id);
     const ranked = candidates.map(candidate => ({ candidate, score: matchScore(item, candidate) })).filter(row => row.score >= 25).sort((a,b) => b.score-a.score).slice(0,5);
     for (const row of ranked) {
-      if (row.candidate.owner) await Notification.create({ user: row.candidate.owner, title: 'Possible lost-and-found match', message: `A new report "${item.title}" may match "${row.candidate.title}" (${row.score}% contextual score).`, type: 'match', relatedItem: item.id });
-      if (item.owner) await Notification.create({ user: item.owner, title: 'Possible item match found', message: `"${row.candidate.title}" may match your report (${row.score}% contextual score).`, type: 'match', relatedItem: row.candidate.id });
+      if (row.candidate.owner) {
+        const note = await store.createNotification({ user: row.candidate.owner, title: 'Possible lost-and-found match', message: `A new report "${item.title}" may match "${row.candidate.title}" (${row.score}% contextual score).`, type: 'match', relatedItem: item.id });
+        io?.to(`user:${row.candidate.owner}`).emit('notification:new', { ...note, matchForLostItem: row.candidate.status === 'Lost' });
+      }
+      if (item.owner) {
+        const note = await store.createNotification({ user: item.owner, title: 'Possible item match found', message: `"${row.candidate.title}" may match your report (${row.score}% contextual score).`, type: 'match', relatedItem: row.candidate.id });
+        io?.to(`user:${item.owner}`).emit('notification:new', { ...note, matchForLostItem: item.status === 'Lost' });
+      }
     }
     res.status(201).json({ item: serialize(item, ranked[0]?.score || 0), matches: ranked.map(row => serialize(row.candidate, row.score)) });
   } catch (error) { next(error); }
@@ -111,13 +117,13 @@ router.post('/', optionalAuth, upload.single('image'), async (req: AuthRequest, 
 
 router.get('/:id/matches', async (req, res, next) => {
   try {
-    const item = await Item.findById(req.params.id);
+    const item = await store.findItemById(String(req.params.id));
     if (!item) return res.status(404).json({ message: 'Item not found' });
     const opposite = item.status === 'Lost' ? 'Found' : 'Lost';
-    const candidates = await Item.find({ status: opposite, _id: { $ne: item.id } }).limit(100);
+    const candidates = await store.findOppositeItems(opposite, item.id);
     const matches = candidates.map(candidate => ({ candidate, score: matchScore(item, candidate) }))
       .sort((a,b) => b.score-a.score).slice(0,10)
-      .map(row => ({ ...serialize(row.candidate, row.score), scoreBreakdown: {
+      .map(row => ({ ...serialize(row.candidate, row.score), score: row.score, scoreBreakdown: {
         visual: item.imageEmbedding?.length && row.candidate.imageEmbedding?.length ? Math.round(Math.max(0, cosine(item.imageEmbedding, row.candidate.imageEmbedding))*100) : null,
         text: Math.round(tokenSimilarity(`${item.title} ${item.description} ${item.category}`, `${row.candidate.title} ${row.candidate.description} ${row.candidate.category}`)*100),
         location: item.location.toLowerCase() === row.candidate.location.toLowerCase() ? 100 : 0
@@ -129,22 +135,25 @@ router.get('/:id/matches', async (req, res, next) => {
 
 router.post('/:id/claim', requireAuth, async (req: AuthRequest, res, next) => {
   try {
-    const item = await Item.findById(req.params.id);
+    const item = await store.findItemById(String(req.params.id));
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (item.status !== 'Found') return res.status(400).json({ message: 'Only found items can receive claim requests' });
     if (item.owner?.toString() === req.user?.id) return res.status(400).json({ message: 'You cannot claim your own report' });
-    if (item.owner) await Notification.create({
-      user: item.owner, title: 'New item claim request',
-      message: `${req.user?.name || 'A student'} believes "${item.title}" belongs to them. Please verify ownership before handover.`,
-      type: 'match', relatedItem: item.id
-    });
+    if (item.owner) {
+      const note = await store.createNotification({
+        user: item.owner, title: 'New item claim request',
+        message: `${req.user?.name || 'A student'} believes "${item.title}" belongs to them. Please verify ownership before handover.`,
+        type: 'match', relatedItem: item.id
+      });
+      req.app.get('io')?.to(`user:${item.owner}`).emit('notification:new', { ...note, matchForLostItem: false });
+    }
     res.status(201).json({ message: 'Claim request sent. The reporter will be notified for verification.' });
   } catch (error) { next(error); }
 });
 
 router.get('/:id', async (req, res, next) => {
   try {
-    const item = await Item.findById(req.params.id);
+    const item = await store.findItemById(String(req.params.id));
     if (!item) return res.status(404).json({ message: 'Item not found' });
     res.json({ item: serialize(item) });
   } catch (error) { next(error); }
@@ -154,12 +163,11 @@ router.patch('/:id/status', requireAuth, async (req: AuthRequest, res, next) => 
   try {
     const { status } = req.body ?? {};
     if (!['Claimed', 'Resolved'].includes(status)) return res.status(400).json({ message: 'Status must be Claimed or Resolved' });
-    const item = await Item.findById(req.params.id);
+    const item = await store.findItemById(String(req.params.id));
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (item.owner && item.owner.toString() !== req.user?.id && req.user?.role !== 'admin') return res.status(403).json({ message: 'Only the reporter or an admin can update this item' });
-    item.status = status;
-    await item.save();
-    res.json({ item: serialize(item) });
+    const updated = await store.updateItemStatus(item.id, status);
+    res.json({ item: serialize(updated || item) });
   } catch (error) { next(error); }
 });
 
